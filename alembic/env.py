@@ -4,9 +4,12 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
-from app.models import Base  # Import all models to ensure they're registered
+
+# Import Base from database, and all models to register them
+from app.database import Base
+import app.models  # noqa: F401
+
 from app.config import get_settings
-from app.database import Base  # even though Base is same
 
 config = context.config
 settings = get_settings()

@@ -32,13 +32,11 @@ class Shipment(Base):
     status: Mapped[ShipmentStatus] = mapped_column(SAEnum(ShipmentStatus), default=ShipmentStatus.MATCHING, index=True)
     failure_category: Mapped[Optional[ShipmentFailureCategory]] = mapped_column(SAEnum(ShipmentFailureCategory), nullable=True)
 
-    # Region information
     region: Mapped[str] = mapped_column(String, index=True)
     crop: Mapped[str] = mapped_column(String, default="potatoes")
-    target_quantity_bags: Mapped[int] = mapped_column(Integer)  # target total bags to fill
+    target_quantity_bags: Mapped[int] = mapped_column(Integer)
     actual_quantity_bags: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    # Timing
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     grace_period_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -50,9 +48,7 @@ class Shipment(Base):
     delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Additional metadata (e.g., route, transporter)
-    metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    extra_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
-    # Relationships
     orders: Mapped[List["Order"]] = relationship(back_populates="shipment")
     verifications: Mapped[List["VerificationReport"]] = relationship(back_populates="shipment")
