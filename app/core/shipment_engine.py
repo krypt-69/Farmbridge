@@ -3,7 +3,7 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.shipment import Shipment, ShipmentStatus, ShipmentFailureCategory
 import uuid
-
+from app.core.payment_engine import process_shipment_failure_financials
 class InvalidStateTransition(Exception):
     pass
 
@@ -143,4 +143,6 @@ async def admin_override_transition(
     # Log audit entry (future)
     await db.commit()
     await db.refresh(shipment)
+        # Process financial reversals if deterministic
+    await process_shipment_failure_financials(db, shipment)
     return shipment
