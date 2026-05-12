@@ -92,9 +92,9 @@ async def transition_shipment(
     try:
         if override:
             # Admin override with new_status based on action string
-            new_status = ShipmentStatus(action)   # must be valid enum value
+            new_status = ShipmentStatus(action)
             shipment = await shipment_engine.admin_override_transition(
-                db, shipment, new_status
+                db, shipment, new_status, current_user, reason=None   # you can add a query param for reason later
             )
         else:
             # Standard transitions

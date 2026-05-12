@@ -8,6 +8,8 @@ from app.models.ledger import LedgerEntry, LedgerEntryType
 from app.core import payment_engine
 from app.workers.tasks.firestore_sync import sync_shipment_task
 import uuid
+from app.models.audit import AuditLog
+from app.models.user import User
 class InvalidStateTransition(Exception):
     pass
 
@@ -149,18 +151,21 @@ async def admin_override_transition(
     db: AsyncSession,
     shipment: Shipment,
     new_status: ShipmentStatus,
+    admin_user: User,
     reason: Optional[str] = None,
 ) -> Shipment:
-    """Admin forced transition with relaxed rules."""
-    # Prevent impossible jumps (e.g., MATCHING -> DELIVERED)
+    """Admin forced transition with relaxed rules, with mandatory audit logging."""
+    # Prevent impossible jumps
     if new_status == ShipmentStatus.DELIVERED and shipment.status != ShipmentStatus.ARRIVED_URBAN:
         raise InvalidStateTransition("Cannot override to DELIVERED unless previous is ARRIVED_URBAN")
     if new_status == ShipmentStatus.IN_TRANSIT and shipment.status not in (ShipmentStatus.LOADING,):
         raise InvalidStateTransition("Must be LOADING to go IN_TRANSIT")
-    # All other admin overrides allowed if they don't break core flow
+
+    # Capture old status for audit
+    old_status = shipment.status
+
     # Override state
     shipment.status = new_status
-    # Optionally set timestamp if applicable
     now = datetime.now(timezone.utc)
     if new_status == ShipmentStatus.LOCKED:
         shipment.locked_at = now
@@ -179,10 +184,19 @@ async def admin_override_transition(
         shipment.failed_at = now
         if not shipment.failure_category:
             shipment.failure_category = ShipmentFailureCategory.OPERATIONAL_INCONSISTENCY
-    # Log audit entry (future)
+
+    # Record the override in the audit log
+    audit = AuditLog(
+        id=uuid.uuid4(),
+        admin_id=admin_user.id,
+        action="shipment_override",
+        entity_type="shipment",
+        entity_id=str(shipment.id),
+        details=f"Status changed from {old_status.value} to {new_status.value}. Reason: {reason or 'No reason provided'}",
+    )
+    db.add(audit)
+
     await db.commit()
     await db.refresh(shipment)
-        # Process financial reversals if deterministic
     sync_shipment_task.delay(str(shipment.id))
-    await process_shipment_failure_financials(db, shipment)
     return shipment
