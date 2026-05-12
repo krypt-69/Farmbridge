@@ -85,3 +85,29 @@ async def admin_deposit(
         "available_balance_cents": wallet.available_balance_cents,
         "locked_balance_cents": wallet.locked_balance_cents,
     }
+@router.post("/admin/test-reserve-and-fail", response_model=dict)
+async def test_reserve_and_fail(
+    user_id: UUID,
+    amount_cents: int,
+    shipment_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Reserve
+    await payment_engine.reserve_funds(db, user, amount_cents, shipment_id)
+    # Simulate deterministic failure of the shipment
+    shipment_result = await db.execute(select(Shipment).where(Shipment.id == shipment_id))
+    shipment = shipment_result.scalar_one_or_none()
+    if shipment:
+        shipment.status = ShipmentStatus.FAILED
+        shipment.failure_category = ShipmentFailureCategory.TIMEOUT
+        from app.core.payment_engine import process_shipment_failure_financials
+        await process_shipment_failure_financials(db, shipment)
+        await db.commit()
+    # Return wallet
+    wallet = await payment_engine.get_or_create_wallet(db, user)
+    return {"available": wallet.available_balance_cents, "locked": wallet.locked_balance_cents}

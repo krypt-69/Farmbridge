@@ -20,7 +20,13 @@ class Order(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     buyer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     shipment_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("shipments.id"), nullable=True, index=True)
-    status: Mapped[OrderStatus] = mapped_column(SAEnum(OrderStatus), default=OrderStatus.PENDING)
+    status: Mapped[OrderStatus] = mapped_column(
+        SAEnum(
+            OrderStatus,
+            values_callable=lambda obj: [e.value for e in obj]
+        ),
+        default=OrderStatus.PENDING
+    )
     quantity_bags: Mapped[int] = mapped_column(Integer)
     price_per_bag: Mapped[int] = mapped_column(Integer)  # cents
     delivery_location: Mapped[str] = mapped_column(String)
@@ -30,3 +36,4 @@ class Order(Base):
     # Relationships
     buyer: Mapped["User"] = relationship(foreign_keys=[buyer_id])
     shipment: Mapped[Optional["Shipment"]] = relationship(back_populates="orders")
+    crop: Mapped[str] = mapped_column(String, default="potatoes")

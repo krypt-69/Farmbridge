@@ -21,7 +21,7 @@ class LedgerEntry(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     wallet_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("wallets.id"), nullable=False, index=True)
     shipment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("shipments.id"), nullable=True)  # nullable for deposits
-    entry_type: Mapped[LedgerEntryType] = mapped_column(SAEnum(LedgerEntryType), nullable=False)
+    entry_type: Mapped[LedgerEntryType] = mapped_column(SAEnum(LedgerEntryType, values_callable=lambda obj: [e.value for e in obj]), nullable=False)
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)  # positive for credit, negative for debit
     description: Mapped[str] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

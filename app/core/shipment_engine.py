@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.shipment import Shipment, ShipmentStatus, ShipmentFailureCategory
 import uuid
 from app.core.payment_engine import process_shipment_failure_financials
+from app.models.ledger import LedgerEntry, LedgerEntryType
 class InvalidStateTransition(Exception):
     pass
 
@@ -101,9 +102,43 @@ async def fail_shipment(
     shipment.status = ShipmentStatus.FAILED
     shipment.failure_category = category
     shipment.failed_at = datetime.now(timezone.utc)
+
+    # Reverse all reserved orders / locked funds immediately
+    if category in (
+        ShipmentFailureCategory.TIMEOUT,
+        ShipmentFailureCategory.INSUFFICIENT_SUPPLY,
+    ):
+        from app.models.order import Order, OrderStatus
+        from app.core.payment_engine import release_reservation
+
+        orders_query = select(Order).where(
+            Order.shipment_id == shipment.id,
+            Order.status == OrderStatus.RESERVED,
+        ).options(selectinload(Order.buyer))
+        result = await db.execute(orders_query)
+        orders = result.scalars().all()
+        for order in orders:
+            total_reserved = order.quantity_bags * order.price_per_bag
+            buyer = order.buyer
+            # Release reservation
+            wallet = await payment_engine.get_or_create_wallet(db, buyer)
+            wallet.locked_balance_cents -= total_reserved
+            wallet.available_balance_cents += total_reserved
+            # Create reversal ledger entry
+            entry = LedgerEntry(
+                id=uuid.uuid4(),
+                wallet_id=wallet.id,
+                shipment_id=shipment.id,
+                entry_type=LedgerEntryType.RESERVATION_REVERSAL,
+                amount_cents=total_reserved,
+                description=f"Auto-reversal for failed shipment {shipment.id}",
+            )
+            db.add(entry)
+            # Optionally mark the order as CANCELLED to prevent further processing
+            order.status = OrderStatus.CANCELLED
+    
     await db.commit()
     await db.refresh(shipment)
-    # In future: trigger refund/reversal logic
     return shipment
 
 async def admin_override_transition(
