@@ -1,10 +1,13 @@
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from app.models.shipment import Shipment, ShipmentStatus, ShipmentFailureCategory
-import uuid
-from app.core.payment_engine import process_shipment_failure_financials
 from app.models.ledger import LedgerEntry, LedgerEntryType
+from app.core import payment_engine
+from app.workers.tasks.firestore_sync import sync_shipment_task
+import uuid
 class InvalidStateTransition(Exception):
     pass
 
@@ -51,6 +54,7 @@ async def lock_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
     shipment.grace_period_end = now + timedelta(hours=1)
     await db.commit()
     await db.refresh(shipment)
+    sync_shipment_task.delay(str(shipment.id))
     return shipment
 
 async def start_verification(db: AsyncSession, shipment: Shipment) -> Shipment:
@@ -67,6 +71,7 @@ async def start_loading(db: AsyncSession, shipment: Shipment) -> Shipment:
     shipment.loading_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(shipment)
+    sync_shipment_task.delay(str(shipment.id))
     return shipment
 
 async def depart_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
@@ -75,6 +80,7 @@ async def depart_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
     shipment.departed_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(shipment)
+    sync_shipment_task.delay(str(shipment.id))
     return shipment
 
 async def arrive_urban(db: AsyncSession, shipment: Shipment) -> Shipment:
@@ -83,6 +89,7 @@ async def arrive_urban(db: AsyncSession, shipment: Shipment) -> Shipment:
     shipment.arrived_urban_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(shipment)
+    sync_shipment_task.delay(str(shipment.id))
     return shipment
 
 async def deliver_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
@@ -91,6 +98,7 @@ async def deliver_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
     shipment.delivered_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(shipment)
+    sync_shipment_task.delay(str(shipment.id))
     return shipment
 
 async def fail_shipment(
@@ -134,6 +142,7 @@ async def fail_shipment(
 
     await db.commit()
     await db.refresh(shipment)
+    sync_shipment_task.delay(str(shipment.id))
     return shipment
 
 async def admin_override_transition(
@@ -174,5 +183,6 @@ async def admin_override_transition(
     await db.commit()
     await db.refresh(shipment)
         # Process financial reversals if deterministic
+    sync_shipment_task.delay(str(shipment.id))
     await process_shipment_failure_financials(db, shipment)
     return shipment

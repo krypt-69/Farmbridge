@@ -7,7 +7,12 @@ celery_app = Celery(
     "farmbridge",
     broker=settings.redis_url,
     backend=settings.redis_url,  # Optional result backend
-    include=["app.workers.tasks.shipment_tasks"],  # Import task modules
+    include=["app.workers.tasks.shipment_tasks",
+            "app.workers.tasks.firestore_sync",
+            "app.workers.tasks.notification_tasks",
+            ],
+
+      # Import task modules
 )
 
 # Optional configuration
