@@ -103,14 +103,12 @@ async def fail_shipment(
     shipment.failure_category = category
     shipment.failed_at = datetime.now(timezone.utc)
 
-    # Reverse all reserved orders / locked funds immediately
+    # Reverse all locked funds for deterministic failures
     if category in (
         ShipmentFailureCategory.TIMEOUT,
         ShipmentFailureCategory.INSUFFICIENT_SUPPLY,
     ):
         from app.models.order import Order, OrderStatus
-        from app.core.payment_engine import release_reservation
-
         orders_query = select(Order).where(
             Order.shipment_id == shipment.id,
             Order.status == OrderStatus.RESERVED,
@@ -120,11 +118,9 @@ async def fail_shipment(
         for order in orders:
             total_reserved = order.quantity_bags * order.price_per_bag
             buyer = order.buyer
-            # Release reservation
             wallet = await payment_engine.get_or_create_wallet(db, buyer)
             wallet.locked_balance_cents -= total_reserved
             wallet.available_balance_cents += total_reserved
-            # Create reversal ledger entry
             entry = LedgerEntry(
                 id=uuid.uuid4(),
                 wallet_id=wallet.id,
@@ -134,9 +130,8 @@ async def fail_shipment(
                 description=f"Auto-reversal for failed shipment {shipment.id}",
             )
             db.add(entry)
-            # Optionally mark the order as CANCELLED to prevent further processing
             order.status = OrderStatus.CANCELLED
-    
+
     await db.commit()
     await db.refresh(shipment)
     return shipment
