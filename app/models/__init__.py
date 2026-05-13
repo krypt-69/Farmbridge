@@ -6,3 +6,4 @@ from app.models.wallet import Wallet
 from app.models.ledger import LedgerEntry, LedgerEntryType
 from app.models.notification import Notification, NotificationType, NotificationChannel
 from app.models.audit import AuditLog
+from app.models.harvest import Harvest, HarvestStatus
