@@ -5,15 +5,16 @@ from sqlalchemy.future import select
 from typing import List, Optional
 from uuid import UUID
 from pydantic import BaseModel, Field
+from datetime import datetime, timezone
 
 from app.database import get_db
 from app.api.deps import get_current_user, require_role
 from app.models.user import User, UserRole
 from app.models.shipment import Shipment, ShipmentStatus
 from app.models.verification import VerificationReport, VerificationStatus
-from app.utils.idempotency import ensure_idempotent, check_idempotency
-from app.utils.gps import is_within_radius
-from app.core import shipment_engine
+from app.models.harvest import Harvest, HarvestStatus
+from app.utils.idempotency import check_idempotency
+from app.core.gps_validation import validate_agent_location
 
 router = APIRouter(prefix="/verifications", tags=["verifications"])
 
@@ -27,7 +28,8 @@ class VerificationSubmit(BaseModel):
     image_urls: Optional[List[str]] = None
     gps_latitude: Optional[float] = None
     gps_longitude: Optional[float] = None
-    status: VerificationStatus = VerificationStatus.PENDING  # agent can set APPROVED/ADJUSTED/REJECTED
+    status: VerificationStatus = VerificationStatus.PENDING
+    harvest_id: Optional[UUID] = None   # NEW: link to specific harvest
 
 @router.post("/submit", response_model=dict)
 async def submit_verification(
@@ -53,11 +55,33 @@ async def submit_verification(
             detail="Shipment is not in VERIFYING state",
         )
 
-    # 3. Basic GPS validation (if agent provides coordinates and we have shipment region centre)
-    if report.gps_latitude is not None and report.gps_longitude is not None:
-        # For now, compare with a dummy farm location (we'll later fetch from a farmer listing)
-        # We'll just log that coordinates were provided – no strict rejections yet.
-        pass  # future: call is_within_radius with farmer listing coordinates
+    # 3. If harvest_id provided, validate it and enforce GPS
+    if report.harvest_id:
+        harvest_result = await db.execute(
+            select(Harvest).where(Harvest.id == report.harvest_id)
+        )
+        harvest = harvest_result.scalar_one_or_none()
+        if not harvest:
+            raise HTTPException(status_code=404, detail="Harvest not found")
+        if harvest.farmer_id != report.farmer_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Harvest does not belong to the given farmer",
+            )
+        # GPS enforcement if both harvest and agent coordinates present
+        if (
+            harvest.latitude is not None
+            and harvest.longitude is not None
+            and report.gps_latitude is not None
+            and report.gps_longitude is not None
+        ):
+            validate_agent_location(
+                report.gps_latitude,
+                report.gps_longitude,
+                harvest.latitude,
+                harvest.longitude,
+                max_distance_m=5000.0,  # 5 km radius
+            )
 
     # 4. Create verification report
     new_report = VerificationReport(
@@ -73,24 +97,32 @@ async def submit_verification(
         image_urls=report.image_urls,
         gps_latitude=report.gps_latitude,
         gps_longitude=report.gps_longitude,
-        client_timestamp=...,  # we'll take client timestamp from request? The model expects a datetime; we can ask client to send it or use server time. We'll take an optional field.
+        harvest_id=report.harvest_id,   # new field
+        client_timestamp=datetime.now(timezone.utc),
     )
-    # We'll add a field from the client if they send it; for now we'll set to current server time.
-    # The model expects client_timestamp (non-null). We'll use server time if not provided.
-    from datetime import datetime, timezone
-    new_report.client_timestamp = datetime.now(timezone.utc)
     db.add(new_report)
 
-    # 5. Recalculate shipment composition (if APPROVED or ADJUSTED, update actual_quantity_bags)
-    # For simplicity, we'll just log; later we can aggregate.
+    # 5. Update shipment and harvest based on verification result
     if report.status == VerificationStatus.APPROVED:
-        # Assume the farmer's contributed bags are exactly claimed
-        shipment.actual_quantity_bags = (shipment.actual_quantity_bags or 0) + report.claimed_quantity_bags
+        shipment.actual_quantity_bags = (
+            shipment.actual_quantity_bags or 0
+        ) + report.claimed_quantity_bags
+        if report.harvest_id:
+            harvest.status = HarvestStatus.VERIFIED
+            harvest.actual_quantity_bags = report.claimed_quantity_bags
     elif report.status == VerificationStatus.ADJUSTED:
-        if report.actual_quantity_bags:
-            shipment.actual_quantity_bags = (shipment.actual_quantity_bags or 0) + report.actual_quantity_bags
-        else:
-            raise HTTPException(status_code=400, detail="Adjusted verification requires actual_quantity_bags")
+        if not report.actual_quantity_bags:
+            raise HTTPException(
+                status_code=400,
+                detail="Adjusted verification requires actual_quantity_bags",
+            )
+        shipment.actual_quantity_bags = (
+            shipment.actual_quantity_bags or 0
+        ) + report.actual_quantity_bags
+        if report.harvest_id:
+            harvest.status = HarvestStatus.VERIFIED
+            harvest.actual_quantity_bags = report.actual_quantity_bags
+    # (REJECTED does not change quantity)
 
     await db.commit()
     await db.refresh(new_report)
@@ -140,4 +172,5 @@ def _report_to_dict(r: VerificationReport) -> dict:
         "image_urls": r.image_urls,
         "gps_latitude": r.gps_latitude,
         "gps_longitude": r.gps_longitude,
+        "harvest_id": str(r.harvest_id) if r.harvest_id else None,
     }

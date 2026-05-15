@@ -34,3 +34,4 @@ class VerificationReport(Base):
 
     # Relationships
     shipment: Mapped["Shipment"] = relationship(back_populates="verifications")
+    harvest_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("harvests.id"), nullable=True, index=True)

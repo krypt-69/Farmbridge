@@ -5,6 +5,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime, timezone
 from enum import Enum
 from app.database import Base
+from typing import Optional
 
 class UserRole(str, Enum):
     BUYER = "buyer"
@@ -16,7 +17,7 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    firebase_uid: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    firebase_uid: Mapped[Optional[str]] = mapped_column(String, unique=True, index=True, nullable=True)
     role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), nullable=False)
     phone: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String, nullable=False)
@@ -26,3 +27,4 @@ class User(Base):
 
     # Relationships
     wallet: Mapped["Wallet"] = relationship(back_populates="user", uselist=False)
+    

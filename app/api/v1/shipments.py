@@ -9,6 +9,7 @@ from app.api.deps import get_current_user, require_role
 from app.models.user import User, UserRole
 from app.models.shipment import Shipment, ShipmentStatus, ShipmentFailureCategory
 from app.core import shipment_engine
+from app.models.harvest import Harvest, HarvestStatus
 
 router = APIRouter(prefix="/shipments", tags=["shipments"])
 
@@ -120,3 +121,32 @@ async def transition_shipment(
         raise HTTPException(status_code=400, detail=str(e))
 
     return shipment_to_dict(shipment)
+@router.get("/{shipment_id}/harvests", response_model=List[dict])
+async def list_shipment_harvests(
+    shipment_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),  # Agent / Admin
+):
+    # Fetch harvests in same region/crop with status PENDING or MATCHED
+    shipment_result = await db.execute(select(Shipment).where(Shipment.id == shipment_id))
+    shipment = shipment_result.scalar_one_or_none()
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+
+    harvest_query = select(Harvest).where(
+        Harvest.region == shipment.region,
+        Harvest.crop == shipment.crop,
+        Harvest.status.in_([HarvestStatus.PENDING, HarvestStatus.MATCHED]),
+        # optional: filter by location proximity if needed
+    )
+    harvests = (await db.execute(harvest_query)).scalars().all()
+    return [
+        {
+            "id": str(h.id),
+            "farmer_name": (await db.execute(select(User).where(User.id == h.farmer_id))).scalar_one_or_none().full_name,
+            "crop": h.crop,
+            "quantity_bags": h.quantity_bags,
+            "region": h.region,
+        }
+        for h in harvests
+    ]

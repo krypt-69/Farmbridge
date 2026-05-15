@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1 import auth, shipments, wallet, orders, verifications, admin, agents, farmers
+from app.api.v1 import auth, shipments, wallet, orders, verifications, admin, agents, farmers, agent_farmers
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
@@ -10,3 +10,4 @@ api_router.include_router(verifications.router)
 api_router.include_router(admin.router)
 api_router.include_router(agents.router)
 api_router.include_router(farmers.router)
+api_router.include_router(agent_farmers.router)
