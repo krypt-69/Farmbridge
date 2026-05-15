@@ -8,3 +8,4 @@ from app.models.notification import Notification, NotificationType, Notification
 from app.models.audit import AuditLog
 from app.models.harvest import Harvest, HarvestStatus
 from app.models.pricing import PricingConfig
+from app.models.device_token import DeviceToken

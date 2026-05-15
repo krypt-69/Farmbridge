@@ -11,6 +11,9 @@ import uuid
 from app.models.audit import AuditLog
 from app.models.user import User
 from sqlalchemy import select as sa_select
+from app.core.notification_engine import create_notifications_for_shipment
+from app.workers.tasks.notification_tasks import send_push_notification_task
+
 class InvalidStateTransition(Exception):
     pass
 
@@ -55,11 +58,10 @@ async def lock_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
     shipment.locked_at = now
     shipment.grace_period_end = now + timedelta(hours=1)
 
-    # ---------- NEW: freeze pricing snapshot ----------
+    # ---------- freeze pricing snapshot ----------
     from app.models.pricing import PricingConfig
     from sqlalchemy import select as sa_select
 
-    # Try exact region/crop match
     pricing_result = await db.execute(
         sa_select(PricingConfig).where(
             PricingConfig.region == shipment.region,
@@ -68,7 +70,6 @@ async def lock_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
     )
     pricing = pricing_result.scalar_one_or_none()
     if not pricing:
-        # Try region with crop=NULL
         pricing_result = await db.execute(
             sa_select(PricingConfig).where(
                 PricingConfig.region == shipment.region,
@@ -77,7 +78,6 @@ async def lock_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
         )
         pricing = pricing_result.scalar_one_or_none()
     if not pricing:
-        # Global default
         pricing_result = await db.execute(
             sa_select(PricingConfig).where(
                 PricingConfig.region == None,
@@ -97,11 +97,19 @@ async def lock_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
                 "farmer_payout_per_bag": pricing.base_market_price_cents - pricing.platform_fee_cents - pricing.transport_fee_cents,
             }
         }
-    # ------------------------------------------------
 
     await db.commit()
     await db.refresh(shipment)
+
+    # Firestore sync
     sync_shipment_task.delay(str(shipment.id))
+
+    # Create notifications and enqueue push tasks
+    notifs = await create_notifications_for_shipment(db, shipment, shipment.status)
+    await db.commit()   # <--- PERSIST THE NOTIFICATIONS
+    for n in notifs:
+        send_push_notification_task.delay(str(n.id))
+
     return shipment
 
 async def start_verification(db: AsyncSession, shipment: Shipment) -> Shipment:
@@ -128,6 +136,13 @@ async def depart_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
     await db.commit()
     await db.refresh(shipment)
     sync_shipment_task.delay(str(shipment.id))
+
+    # Notifications
+    notifs = await create_notifications_for_shipment(db, shipment, shipment.status)
+    await db.commit()   # <--- PERSIST THE NOTIFICATIONS
+    for n in notifs:
+        send_push_notification_task.delay(str(n.id))
+
     return shipment
 
 async def arrive_urban(db: AsyncSession, shipment: Shipment) -> Shipment:
@@ -137,6 +152,13 @@ async def arrive_urban(db: AsyncSession, shipment: Shipment) -> Shipment:
     await db.commit()
     await db.refresh(shipment)
     sync_shipment_task.delay(str(shipment.id))
+
+    # Notifications
+    notifs = await create_notifications_for_shipment(db, shipment, shipment.status)
+    await db.commit()   # <--- PERSIST THE NOTIFICATIONS
+    for n in notifs:
+        send_push_notification_task.delay(str(n.id))
+
     return shipment
 
 async def deliver_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
@@ -146,6 +168,13 @@ async def deliver_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
     await db.commit()
     await db.refresh(shipment)
     sync_shipment_task.delay(str(shipment.id))
+
+    # Notifications
+    notifs = await create_notifications_for_shipment(db, shipment, shipment.status)
+    await db.commit()   # <--- PERSIST THE NOTIFICATIONS
+    for n in notifs:
+        send_push_notification_task.delay(str(n.id))
+
     return shipment
 
 async def fail_shipment(
@@ -190,6 +219,13 @@ async def fail_shipment(
     await db.commit()
     await db.refresh(shipment)
     sync_shipment_task.delay(str(shipment.id))
+
+    # Notifications
+    notifs = await create_notifications_for_shipment(db, shipment, shipment.status)
+    await db.commit()   # <--- PERSIST THE NOTIFICATIONS
+    for n in notifs:
+        send_push_notification_task.delay(str(n.id))
+
     return shipment
 
 async def admin_override_transition(
@@ -244,4 +280,12 @@ async def admin_override_transition(
     await db.commit()
     await db.refresh(shipment)
     sync_shipment_task.delay(str(shipment.id))
+
+    # Notifications for important statuses after admin override
+    if new_status in (ShipmentStatus.LOCKED, ShipmentStatus.IN_TRANSIT, ShipmentStatus.ARRIVED_URBAN, ShipmentStatus.DELIVERED, ShipmentStatus.FAILED):
+        notifs = await create_notifications_for_shipment(db, shipment, new_status)
+        await db.commit()   # <--- PERSIST THE NOTIFICATIONS
+        for n in notifs:
+            send_push_notification_task.delay(str(n.id))
+
     return shipment
