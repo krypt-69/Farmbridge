@@ -8,6 +8,8 @@ from app.models.order import Order, OrderStatus
 from app.models.shipment import Shipment, ShipmentStatus
 from app.models.harvest import Harvest, HarvestStatus
 from app.core.payment_engine import reserve_funds, release_reservation
+from app.models.pricing import PricingConfig
+from sqlalchemy import and_
 
 DEFAULT_PRICE_PER_BAG = 500000  # 5000 KES in cents
 
@@ -94,16 +96,47 @@ async def match_harvests_to_shipments(db: AsyncSession):
 
 
 async def assign_order_to_shipment(db: AsyncSession, order: Order, shipment: Shipment):
-    order.price_per_bag = DEFAULT_PRICE_PER_BAG
+    # Fetch pricing for this region/crop
+    pricing = await get_pricing_for(db, order.delivery_location, order.crop)
+    buyer_price = pricing.base_market_price_cents - pricing.buyer_discount_cents
+    order.price_per_bag = buyer_price
     order.shipment_id = shipment.id
     order.status = OrderStatus.RESERVED
-    total_amount = order.quantity_bags * DEFAULT_PRICE_PER_BAG
+
+    total_amount = order.quantity_bags * buyer_price
     await reserve_funds(db, order.buyer, total_amount, shipment.id)
 
 
 async def maybe_lock_shipment(db: AsyncSession, shipment: Shipment):
-    """Lock shipment if total committed (orders + matched harvests) reaches target."""
     total_bags = await _get_total_committed_bags(db, shipment.id)
     if total_bags >= shipment.target_quantity_bags:
-        from app.core.shipment_engine import lock_shipment
         await lock_shipment(db, shipment)
+async def get_pricing_for(db: AsyncSession, region: str, crop: str) -> PricingConfig:
+    # Try exact match
+    result = await db.execute(
+        select(PricingConfig).where(
+            PricingConfig.region == region, PricingConfig.crop == crop
+        )
+    )
+    config = result.scalar_one_or_none()
+    if config:
+        return config
+    # Try region with crop=None
+    result = await db.execute(
+        select(PricingConfig).where(
+            PricingConfig.region == region, PricingConfig.crop == None
+        )
+    )
+    config = result.scalar_one_or_none()
+    if config:
+        return config
+    # Global default
+    result = await db.execute(
+        select(PricingConfig).where(
+            PricingConfig.region == None, PricingConfig.crop == None
+        )
+    )
+    config = result.scalar_one_or_none()
+    if not config:
+        raise ValueError("No pricing configuration found")
+    return config

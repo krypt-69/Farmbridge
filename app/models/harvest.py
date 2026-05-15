@@ -22,6 +22,7 @@ class Harvest(Base):
     farmer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     crop: Mapped[str] = mapped_column(String, default="potatoes")
     quantity_bags: Mapped[int] = mapped_column(Integer)
+    actual_quantity_bags: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     region: Mapped[str] = mapped_column(String)
     expected_harvest_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[HarvestStatus] = mapped_column(SAEnum(HarvestStatus), default=HarvestStatus.PENDING)

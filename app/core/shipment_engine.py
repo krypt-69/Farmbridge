@@ -10,6 +10,7 @@ from app.workers.tasks.firestore_sync import sync_shipment_task
 import uuid
 from app.models.audit import AuditLog
 from app.models.user import User
+from sqlalchemy import select as sa_select
 class InvalidStateTransition(Exception):
     pass
 
@@ -52,8 +53,52 @@ async def lock_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
     now = datetime.now(timezone.utc)
     shipment.status = ShipmentStatus.LOCKED
     shipment.locked_at = now
-    # set grace period end (e.g., 1 hour)
     shipment.grace_period_end = now + timedelta(hours=1)
+
+    # ---------- NEW: freeze pricing snapshot ----------
+    from app.models.pricing import PricingConfig
+    from sqlalchemy import select as sa_select
+
+    # Try exact region/crop match
+    pricing_result = await db.execute(
+        sa_select(PricingConfig).where(
+            PricingConfig.region == shipment.region,
+            PricingConfig.crop == shipment.crop,
+        )
+    )
+    pricing = pricing_result.scalar_one_or_none()
+    if not pricing:
+        # Try region with crop=NULL
+        pricing_result = await db.execute(
+            sa_select(PricingConfig).where(
+                PricingConfig.region == shipment.region,
+                PricingConfig.crop == None,
+            )
+        )
+        pricing = pricing_result.scalar_one_or_none()
+    if not pricing:
+        # Global default
+        pricing_result = await db.execute(
+            sa_select(PricingConfig).where(
+                PricingConfig.region == None,
+                PricingConfig.crop == None,
+            )
+        )
+        pricing = pricing_result.scalar_one_or_none()
+
+    if pricing:
+        shipment.extra_data = {
+            "pricing_snapshot": {
+                "base_market_price_cents": pricing.base_market_price_cents,
+                "platform_fee_cents": pricing.platform_fee_cents,
+                "transport_fee_cents": pricing.transport_fee_cents,
+                "buyer_discount_cents": pricing.buyer_discount_cents,
+                "buyer_price_per_bag": pricing.base_market_price_cents - pricing.buyer_discount_cents,
+                "farmer_payout_per_bag": pricing.base_market_price_cents - pricing.platform_fee_cents - pricing.transport_fee_cents,
+            }
+        }
+    # ------------------------------------------------
+
     await db.commit()
     await db.refresh(shipment)
     sync_shipment_task.delay(str(shipment.id))
