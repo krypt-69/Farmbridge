@@ -7,11 +7,11 @@ from sqlalchemy import func
 from app.models.order import Order, OrderStatus
 from app.models.shipment import Shipment, ShipmentStatus
 from app.models.harvest import Harvest, HarvestStatus
-from app.core.payment_engine import reserve_funds, release_reservation
 from app.models.pricing import PricingConfig
-from sqlalchemy import and_
+from app.core.payment_engine import reserve_funds, release_reservation
+from app.core.shipment_engine import lock_shipment   # <--- ADD THIS LINE
 
-DEFAULT_PRICE_PER_BAG = 500000  # 5000 KES in cents
+DEFAULT_PRICE_PER_BAG = 500000
 
 async def match_pending_orders(db: AsyncSession):
     """Try to match all pending orders to open shipments, then match harvests."""
