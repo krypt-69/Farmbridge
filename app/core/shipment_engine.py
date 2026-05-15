@@ -171,9 +171,13 @@ async def deliver_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
 
     # Notifications
     notifs = await create_notifications_for_shipment(db, shipment, shipment.status)
-    await db.commit()   # <--- PERSIST THE NOTIFICATIONS
+    await db.commit()
     for n in notifs:
         send_push_notification_task.delay(str(n.id))
+
+    # Update trust ratings
+    from app.core.trust_engine import update_ratings_for_shipment
+    await update_ratings_for_shipment(db, shipment)
 
     return shipment
 
@@ -222,9 +226,13 @@ async def fail_shipment(
 
     # Notifications
     notifs = await create_notifications_for_shipment(db, shipment, shipment.status)
-    await db.commit()   # <--- PERSIST THE NOTIFICATIONS
+    await db.commit()
     for n in notifs:
         send_push_notification_task.delay(str(n.id))
+
+    # Update trust ratings
+    from app.core.trust_engine import update_ratings_for_shipment
+    await update_ratings_for_shipment(db, shipment)
 
     return shipment
 
@@ -284,8 +292,13 @@ async def admin_override_transition(
     # Notifications for important statuses after admin override
     if new_status in (ShipmentStatus.LOCKED, ShipmentStatus.IN_TRANSIT, ShipmentStatus.ARRIVED_URBAN, ShipmentStatus.DELIVERED, ShipmentStatus.FAILED):
         notifs = await create_notifications_for_shipment(db, shipment, new_status)
-        await db.commit()   # <--- PERSIST THE NOTIFICATIONS
+        await db.commit()
         for n in notifs:
             send_push_notification_task.delay(str(n.id))
+
+    # Update trust ratings when admin overrides to DELIVERED or FAILED
+    if new_status in (ShipmentStatus.DELIVERED, ShipmentStatus.FAILED):
+        from app.core.trust_engine import update_ratings_for_shipment
+        await update_ratings_for_shipment(db, shipment)
 
     return shipment
