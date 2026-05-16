@@ -6,12 +6,17 @@ from datetime import datetime, timezone
 from enum import Enum
 from app.database import Base
 from typing import Optional
+from enum import Enum as PyEnum
 
 class UserRole(str, Enum):
     BUYER = "buyer"
     FARMER = "farmer"
     AGENT = "agent"
     ADMIN = "admin"
+#class ApprovalStatus(str, PyEnum):
+ #   PENDING = "pending"
+  #  APPROVED = "approved"
+   # REJECTED = "rejected"
 
 class User(Base):
     __tablename__ = "users"
@@ -27,4 +32,7 @@ class User(Base):
 
     # Relationships
     wallet: Mapped["Wallet"] = relationship(back_populates="user", uselist=False)
+    profile_picture_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    approval_status: Mapped[str] = mapped_column(String, default="PENDING", nullable=False)
+
     

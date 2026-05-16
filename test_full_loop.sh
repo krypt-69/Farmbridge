@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e  # exit on first error
 
+# Generate a random operation_id for this test run using Python (no uuidgen required)
+OPERATION_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
+
 # 1. Get fresh admin token
 echo "=== Refreshing admin token ==="
 source env.sh
@@ -15,7 +18,7 @@ FARMER_RESPONSE=$(curl -s -X POST "http://localhost:8000/api/v1/agents/create-fa
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "phone": "+2545607223411231",
+    "phone": "+254523904411231",
     "full_name": "Alice Wambui",
     "region": "Kiambu",
     "crop": "potatoes",
@@ -82,7 +85,7 @@ VERIFY_RESPONSE=$(curl -s -X POST "http://localhost:8000/api/v1/shipments/$SHIP_
 echo "Verify response: $VERIFY_RESPONSE"
 
 # ----------------------------------------
-# 7. Agent submits verification (GPS matches farm)
+# 7. Agent submits verification (GPS matches farm) with unique operation_id
 # ----------------------------------------
 echo ""
 echo "=== Submitting verification ==="
@@ -93,7 +96,7 @@ VERIF_SUBMIT=$(curl -s -X POST "http://localhost:8000/api/v1/verifications/submi
     \"shipment_id\": \"$SHIP_ID\",
     \"farmer_id\": \"$FARMER_ID\",
     \"harvest_id\": \"$HARVEST_ID\",
-    \"operation_id\": \"aaaa1111-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",
+    \"operation_id\": \"$OPERATION_ID\",
     \"claimed_quantity_bags\": 30,
     \"actual_quantity_bags\": 28,
     \"status\": \"adjusted\",

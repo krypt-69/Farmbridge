@@ -14,7 +14,11 @@ async def list_farmers(
     current_user: User = Depends(require_role(UserRole.AGENT, UserRole.ADMIN)),
 ):
     result = await db.execute(
-        select(User).where(User.role == UserRole.FARMER, User.is_active == True)
+        select(User).where(
+            User.role == UserRole.FARMER,
+            User.is_active == True,
+            User.approval_status == "APPROVED",
+        )
     )
     farmers = result.scalars().all()
     return [

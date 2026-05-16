@@ -13,4 +13,6 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
         "phone": current_user.phone,
         "full_name": current_user.full_name,
         "is_active": current_user.is_active,
+        "profile_picture_url": current_user.profile_picture_url,   # <-- add this
+        "approval_status": current_user.approval_status,           # optional
     }

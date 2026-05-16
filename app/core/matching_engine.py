@@ -8,8 +8,9 @@ from app.models.order import Order, OrderStatus
 from app.models.shipment import Shipment, ShipmentStatus
 from app.models.harvest import Harvest, HarvestStatus
 from app.models.pricing import PricingConfig
+from app.models.user import User   # <-- added import
 from app.core.payment_engine import reserve_funds, release_reservation
-from app.core.shipment_engine import lock_shipment   # <--- ADD THIS LINE
+from app.core.shipment_engine import lock_shipment
 
 DEFAULT_PRICE_PER_BAG = 500000
 
@@ -82,9 +83,14 @@ async def _get_total_committed_bags(db, shipment_id):
 
 
 async def match_harvests_to_shipments(db: AsyncSession):
-    """Assign pending harvests to matching shipments if they fit."""
+    """Assign pending harvests from approved farmers to matching shipments if they fit."""
     pending_harvests = (await db.execute(
-        select(Harvest).where(Harvest.status == HarvestStatus.PENDING)
+        select(Harvest)
+        .join(User, Harvest.farmer_id == User.id)
+        .where(
+            Harvest.status == HarvestStatus.PENDING,
+            User.approval_status == "APPROVED"  # <-- only approved farmers
+        )
     )).scalars().all()
 
     for harvest in pending_harvests:
@@ -111,6 +117,8 @@ async def maybe_lock_shipment(db: AsyncSession, shipment: Shipment):
     total_bags = await _get_total_committed_bags(db, shipment.id)
     if total_bags >= shipment.target_quantity_bags:
         await lock_shipment(db, shipment)
+
+
 async def get_pricing_for(db: AsyncSession, region: str, crop: str) -> PricingConfig:
     # Try exact match
     result = await db.execute(

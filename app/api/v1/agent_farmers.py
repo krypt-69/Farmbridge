@@ -39,6 +39,7 @@ async def create_farmer(
         phone=data.phone,
         full_name=data.full_name,
         is_active=True,
+        approval_status="PENDING",   # <-- explicit pending status
     )
     db.add(farmer)
     await db.flush()   # force generation of farmer.id

@@ -8,6 +8,7 @@ from app.database import get_db
 from app.api.deps import get_current_user, require_role
 from app.models.user import User, UserRole
 from app.models.audit import AuditLog
+ 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -79,3 +80,55 @@ async def update_user_role(
     await db.commit()
     # Optional: audit log entry
     return {"message": f"Role updated to {new_role.value}"}
+
+@router.get("/pending-farmers", response_model=List[dict])
+async def list_pending_farmers(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    result = await db.execute(
+        select(User).where(
+            User.role == UserRole.FARMER,
+            User.approval_status == "PENDING"
+        )
+    )
+    farmers = result.scalars().all()
+    return [
+        {
+            "id": str(f.id),
+            "full_name": f.full_name,
+            "phone": f.phone,
+            "profile_picture_url": f.profile_picture_url,
+        }
+        for f in farmers
+    ]
+
+@router.post("/approve-farmer/{user_id}", response_model=dict)
+async def approve_farmer(
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user or user.role != UserRole.FARMER:
+        raise HTTPException(status_code=404, detail="Farmer not found")
+    user.approval_status = "APPROVED"
+    await db.commit()
+    return {"message": "Farmer approved"}
+
+@router.post("/reject-farmer/{user_id}", response_model=dict)
+async def reject_farmer(
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user or user.role != UserRole.FARMER:
+        raise HTTPException(status_code=404, detail="Farmer not found")
+    user.approval_status = "REJECTED"
+    # Optionally deactivate the user
+    user.is_active = False
+    await db.commit()
+    return {"message": "Farmer rejected"}
