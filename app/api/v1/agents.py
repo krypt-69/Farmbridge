@@ -5,6 +5,12 @@ from typing import List
 from app.database import get_db
 from app.api.deps import require_role, get_current_user
 from app.models.user import User, UserRole
+from pydantic import BaseModel
+
+class LocationUpdate(BaseModel):
+    latitude: float
+    longitude: float
+
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -29,3 +35,14 @@ async def list_farmers(
         }
         for f in farmers
     ]
+
+@router.put("/location", response_model=dict)
+async def update_my_location(
+    data: LocationUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.AGENT, UserRole.ADMIN)),
+):
+    current_user.gps_latitude = data.latitude
+    current_user.gps_longitude = data.longitude
+    await db.commit()
+    return {"message": "Location updated"}

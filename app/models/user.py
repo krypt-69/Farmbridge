@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import String, Boolean, DateTime, Enum as SAEnum
+from sqlalchemy import String, Boolean, DateTime, Enum as SAEnum, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime, timezone
@@ -34,5 +34,7 @@ class User(Base):
     wallet: Mapped["Wallet"] = relationship(back_populates="user", uselist=False)
     profile_picture_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     approval_status: Mapped[str] = mapped_column(String, default="PENDING", nullable=False)
+    gps_latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    gps_longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     

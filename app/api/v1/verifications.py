@@ -42,7 +42,13 @@ async def submit_verification(
     if existing:
         return _report_to_dict(existing)
 
-    # 2. Validate shipment exists and is in VERIFYING state
+    # 2. Update agent's last known location (if GPS provided)
+    if report.gps_latitude is not None and report.gps_longitude is not None:
+        current_user.gps_latitude = report.gps_latitude
+        current_user.gps_longitude = report.gps_longitude
+        # No need to commit here; will be committed with the report.
+
+    # 3. Validate shipment exists and is in VERIFYING state
     shipment_result = await db.execute(
         select(Shipment).where(Shipment.id == report.shipment_id)
     )
@@ -55,7 +61,7 @@ async def submit_verification(
             detail="Shipment is not in VERIFYING state",
         )
 
-    # 3. If harvest_id provided, validate it and enforce GPS
+    # 4. If harvest_id provided, validate it and enforce GPS
     if report.harvest_id:
         harvest_result = await db.execute(
             select(Harvest).where(Harvest.id == report.harvest_id)
@@ -83,7 +89,7 @@ async def submit_verification(
                 max_distance_m=5000.0,  # 5 km radius
             )
 
-    # 4. Create verification report
+    # 5. Create verification report
     new_report = VerificationReport(
         id=uuid.uuid4(),
         agent_id=current_user.id,
@@ -102,7 +108,7 @@ async def submit_verification(
     )
     db.add(new_report)
 
-    # 5. Update shipment and harvest based on verification result
+    # 6. Update shipment and harvest based on verification result
     if report.status == VerificationStatus.APPROVED:
         shipment.actual_quantity_bags = (
             shipment.actual_quantity_bags or 0

@@ -10,7 +10,7 @@ from app.models.user import User, UserRole
 from app.models.shipment import Shipment, ShipmentStatus, ShipmentFailureCategory
 from app.core import shipment_engine
 from app.models.harvest import Harvest, HarvestStatus
-
+from app.utils.gps import cluster_harvests, haversine_distance
 router = APIRouter(prefix="/shipments", tags=["shipments"])
 
 # Helper to convert shipment to dict
@@ -124,10 +124,10 @@ async def transition_shipment(
 @router.get("/{shipment_id}/harvests", response_model=List[dict])
 async def list_shipment_harvests(
     shipment_id: UUID,
+    group_by_proximity: bool = False,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),  # Agent / Admin
+    current_user: User = Depends(get_current_user),
 ):
-    # Fetch harvests in same region/crop with status PENDING or MATCHED
     shipment_result = await db.execute(select(Shipment).where(Shipment.id == shipment_id))
     shipment = shipment_result.scalar_one_or_none()
     if not shipment:
@@ -137,16 +137,183 @@ async def list_shipment_harvests(
         Harvest.region == shipment.region,
         Harvest.crop == shipment.crop,
         Harvest.status.in_([HarvestStatus.PENDING, HarvestStatus.MATCHED]),
-        # optional: filter by location proximity if needed
     )
     harvests = (await db.execute(harvest_query)).scalars().all()
+
+    if group_by_proximity:
+        clusters = cluster_harvests(harvests, max_distance_m=10000)  # 10 km
+        # Build farmer name map
+        farmer_ids = set(h.farmer_id for cluster in clusters for h in cluster)
+        farmers = (await db.execute(select(User).where(User.id.in_(farmer_ids)))).scalars().all()
+        farmer_map = {f.id: f.full_name for f in farmers}
+        result = []
+        for idx, cluster in enumerate(clusters):
+            cluster_data = []
+            for h in cluster:
+                cluster_data.append({
+                    "id": str(h.id),
+                    "farmer_name": farmer_map.get(h.farmer_id, "Unknown"),
+                    "crop": h.crop,
+                    "quantity_bags": h.quantity_bags,
+                    "latitude": h.latitude,
+                    "longitude": h.longitude,
+                })
+            result.append({"cluster": idx+1, "harvests": cluster_data})
+        return result
+    else:
+        # Original flat list
+        return [
+            {
+                "id": str(h.id),
+                "farmer_name": (await db.execute(select(User).where(User.id == h.farmer_id))).scalar_one_or_none().full_name,
+                "crop": h.crop,
+                "quantity_bags": h.quantity_bags,
+                "region": h.region,
+            }
+            for h in harvests
+        ]
+@router.get("/{shipment_id}/available-agents", response_model=List[dict])
+async def list_available_agents(
+    shipment_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    # Get shipment to know region/crop
+    shipment_result = await db.execute(select(Shipment).where(Shipment.id == shipment_id))
+    shipment = shipment_result.scalar_one_or_none()
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+
+    # Get harvests with coordinates for this shipment
+    harvest_query = select(Harvest).where(
+        Harvest.region == shipment.region,
+        Harvest.crop == shipment.crop,
+        Harvest.latitude != None,
+        Harvest.longitude != None,
+        Harvest.status.in_([HarvestStatus.PENDING, HarvestStatus.MATCHED]),
+    )
+    harvests = (await db.execute(harvest_query)).scalars().all()
+
+    # Get all agents with coordinates
+    agent_query = select(User).where(
+        User.role.in_([UserRole.AGENT, UserRole.ADMIN]),   # admins can act as agents
+        User.is_active == True,
+        User.gps_latitude != None,
+        User.gps_longitude != None,
+    )
+    agents = (await db.execute(agent_query)).scalars().all()
+
+    if not harvests:
+        # No harvest coordinates, return agents unsorted
+        return [
+            {"agent_id": str(a.id), "full_name": a.full_name, "latitude": a.gps_latitude, "longitude": a.gps_longitude, "distance_km": None}
+            for a in agents
+        ]
+
+    # For each agent, compute distance to the nearest harvest
+    agent_distances = []
+    for agent in agents:
+        min_distance = float("inf")
+        for h in harvests:
+            d = haversine_distance(agent.gps_latitude, agent.gps_longitude, h.latitude, h.longitude)
+            if d < min_distance:
+                min_distance = d
+        agent_distances.append((agent, min_distance))
+
+    # Sort by distance
+    agent_distances.sort(key=lambda x: x[1])
+
     return [
         {
-            "id": str(h.id),
-            "farmer_name": (await db.execute(select(User).where(User.id == h.farmer_id))).scalar_one_or_none().full_name,
-            "crop": h.crop,
-            "quantity_bags": h.quantity_bags,
-            "region": h.region,
+            "agent_id": str(agent.id),
+            "full_name": agent.full_name,
+            "latitude": agent.gps_latitude,
+            "longitude": agent.gps_longitude,
+            "distance_km": round(distance / 1000, 2),
         }
-        for h in harvests
+        for agent, distance in agent_distances
     ]
+@router.post("/shipments/{shipment_id}/assign", response_model=dict)
+async def assign_to_shipment(
+    shipment_id: UUID,
+    order_ids: List[UUID] = [],
+    harvest_ids: List[UUID] = [],
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    shipment = await db.execute(select(Shipment).where(Shipment.id == shipment_id))
+    shipment = shipment.scalar_one_or_none()
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+    if shipment.status != ShipmentStatus.MATCHING:
+        raise HTTPException(status_code=400, detail="Can only assign to MATCHING shipments")
+
+    # Assign orders
+    for order_id in order_ids:
+        order = await db.execute(select(Order).where(Order.id == order_id, Order.status == OrderStatus.PENDING))
+        order = order.scalar_one_or_none()
+        if not order:
+            raise HTTPException(status_code=400, detail=f"Order {order_id} not available")
+        total_amount = order.quantity_bags * DEFAULT_PRICE_PER_BAG
+        buyer = await db.execute(select(User).where(User.id == order.buyer_id))
+        buyer = buyer.scalar_one_or_none()
+        if buyer:
+            await reserve_funds(db, buyer, total_amount, shipment.id)
+        order.shipment_id = shipment.id
+        order.price_per_bag = DEFAULT_PRICE_PER_BAG
+        order.status = OrderStatus.RESERVED
+
+    # Assign harvests
+    for harvest_id in harvest_ids:
+        harvest = await db.execute(select(Harvest).where(Harvest.id == harvest_id, Harvest.status == HarvestStatus.PENDING))
+        harvest = harvest.scalar_one_or_none()
+        if not harvest:
+            raise HTTPException(status_code=400, detail=f"Harvest {harvest_id} not available")
+        harvest.shipment_id = shipment.id
+        harvest.status = HarvestStatus.MATCHED
+
+    await db.commit()
+    return {"message": "Assigned successfully"}
+
+@router.post("/shipments/{shipment_id}/unassign", response_model=dict)
+async def unassign_from_shipment(
+    shipment_id: UUID,
+    order_ids: List[UUID] = [],
+    harvest_ids: List[UUID] = [],
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    shipment = await db.execute(select(Shipment).where(Shipment.id == shipment_id))
+    shipment = shipment.scalar_one_or_none()
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+    if shipment.status != ShipmentStatus.MATCHING:
+        raise HTTPException(status_code=400, detail="Can only unassign from MATCHING shipments")
+
+    # Unassign orders
+    for order_id in order_ids:
+        order = await db.execute(select(Order).where(Order.id == order_id, Order.shipment_id == shipment_id, Order.status == OrderStatus.RESERVED))
+        order = order.scalar_one_or_none()
+        if not order:
+            raise HTTPException(status_code=400, detail=f"Order {order_id} not in this shipment")
+        # Release funds
+        from app.core.payment_engine import release_reservation
+        total_amount = order.quantity_bags * order.price_per_bag
+        buyer = await db.execute(select(User).where(User.id == order.buyer_id))
+        buyer = buyer.scalar_one_or_none()
+        if buyer:
+            await release_reservation(db, buyer, total_amount, shipment.id)
+        order.shipment_id = None
+        order.status = OrderStatus.PENDING
+
+    # Unassign harvests
+    for harvest_id in harvest_ids:
+        harvest = await db.execute(select(Harvest).where(Harvest.id == harvest_id, Harvest.shipment_id == shipment_id, Harvest.status == HarvestStatus.MATCHED))
+        harvest = harvest.scalar_one_or_none()
+        if not harvest:
+            raise HTTPException(status_code=400, detail=f"Harvest {harvest_id} not in this shipment")
+        harvest.shipment_id = None
+        harvest.status = HarvestStatus.PENDING
+
+    await db.commit()
+    return {"message": "Unassigned successfully"}

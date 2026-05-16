@@ -16,3 +16,25 @@ def is_within_radius(
 ) -> bool:
     """Return True if point1 and point2 are within max_distance_m metres."""
     return haversine_distance(lat1, lon1, lat2, lon2) <= max_distance_m
+def cluster_harvests(harvests, max_distance_m=10000):
+    """
+    Group harvest ORM objects by proximity.
+    Returns a list of clusters, each being a list of harvest ORM objects.
+    """
+    # Only use harvests that have coordinates
+    valid = [h for h in harvests if h.latitude is not None and h.longitude is not None]
+    clusters = []
+    used = set()
+    for i, h1 in enumerate(valid):
+        if i in used:
+            continue
+        cluster = [h1]
+        used.add(i)
+        for j, h2 in enumerate(valid):
+            if j in used:
+                continue
+            if haversine_distance(h1.latitude, h1.longitude, h2.latitude, h2.longitude) <= max_distance_m:
+                cluster.append(h2)
+                used.add(j)
+        clusters.append(cluster)
+    return clusters
