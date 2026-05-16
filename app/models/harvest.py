@@ -14,6 +14,10 @@ class HarvestStatus(str, Enum):
     MATCHED = "matched"
     VERIFIED = "verified"
     CANCELLED = "cancelled"
+#class PayoutStatus(str, Enum):
+  #  PENDING_PAYOUT = "pending_payout"
+ #   PAID = "paid"
+
 
 class Harvest(Base):
     __tablename__ = "harvests"
@@ -32,3 +36,4 @@ class Harvest(Base):
     shipment_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("shipments.id"), nullable=True, index=True)
     latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    payout_status: Mapped[str] = mapped_column(String, default="PENDING_PAYOUT", nullable=False)

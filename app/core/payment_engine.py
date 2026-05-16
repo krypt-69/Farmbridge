@@ -45,7 +45,7 @@ async def reserve_funds(
     db: AsyncSession,
     user: User,
     amount_cents: int,
-    shipment_id: uuid.UUID,
+    shipment_id: Optional[uuid.UUID] = None,   # make optional
 ) -> Wallet:
     wallet = await get_or_create_wallet(db, user)
     if wallet.available_balance_cents < amount_cents:
@@ -56,10 +56,10 @@ async def reserve_funds(
     entry = LedgerEntry(
         id=uuid.uuid4(),
         wallet_id=wallet.id,
-        shipment_id=shipment_id,
+        shipment_id=shipment_id,   # can be None now
         entry_type=LedgerEntryType.RESERVATION,
-        amount_cents=-amount_cents,  # negative = debit from available
-        description=f"Reservation for shipment {shipment_id}",
+        amount_cents=-amount_cents,
+        description=f"Reservation for shipment {shipment_id}" if shipment_id else "Reservation (no shipment yet)",
     )
     db.add(entry)
     await db.commit()

@@ -13,6 +13,9 @@ class OrderStatus(str, Enum):
     PARTIALLY_FULFILLED = "partially_fulfilled"
     FULFILLED = "fulfilled"
     CANCELLED = "cancelled"
+#class PaymentMode(str, Enum):
+ #   AUTO_ESCROW = "auto_escrow"
+  #  MANUAL_CALL = "manual_call"
 
 class Order(Base):
     __tablename__ = "orders"
@@ -32,7 +35,8 @@ class Order(Base):
     delivery_location: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-
+    
+    payment_mode: Mapped[str] = mapped_column(String, default="AUTO_ESCROW", nullable=False)
     # Relationships
     buyer: Mapped["User"] = relationship(foreign_keys=[buyer_id])
     shipment: Mapped[Optional["Shipment"]] = relationship(back_populates="orders")

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from app.database import get_db
 from app.api.deps import get_current_user, require_role
 from app.models.user import User, UserRole
-from app.models.order import Order, OrderStatus
+from app.models.order import Order, OrderStatus   # PaymentMode no longer needed
 from app.models.shipment import Shipment, ShipmentStatus
 from app.core import matching_engine, payment_engine
 
@@ -19,6 +19,7 @@ class OrderCreate(BaseModel):
     quantity_bags: int = Field(gt=0)
     delivery_location: str
     crop: str = "potatoes"
+    manual_payment: bool = False
 
 @router.post("/", response_model=dict)
 async def place_order(
@@ -26,7 +27,24 @@ async def place_order(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role(UserRole.BUYER, UserRole.ADMIN)),
 ):
-    # Check buyer's wallet balance
+    # Manual payment path: no funds reserved, no automatic matching
+    if order_data.manual_payment:
+        order = Order(
+            id=uuid.uuid4(),
+            buyer_id=current_user.id,
+            quantity_bags=order_data.quantity_bags,
+            delivery_location=order_data.delivery_location,
+            crop=order_data.crop,
+            status=OrderStatus.PENDING,
+            payment_mode="MANUAL_CALL",          # string, not enum
+            price_per_bag=0,
+        )
+        db.add(order)
+        await db.commit()
+        await db.refresh(order)
+        return _order_to_dict(order)
+
+    # Automatic (escrow) path: require sufficient balance
     wallet = await payment_engine.get_or_create_wallet(db, current_user)
     total_needed = order_data.quantity_bags * matching_engine.DEFAULT_PRICE_PER_BAG
     if wallet.available_balance_cents < total_needed:
@@ -39,7 +57,8 @@ async def place_order(
         delivery_location=order_data.delivery_location,
         crop=order_data.crop,
         status=OrderStatus.PENDING,
-        price_per_bag=0,   # to be set when matched
+        payment_mode="AUTO_ESCROW",              # string
+        price_per_bag=0,
     )
     db.add(order)
     await db.commit()
@@ -86,12 +105,10 @@ async def cancel_order(
         raise HTTPException(status_code=400, detail="Cannot cancel order in current state")
 
     if order.status == OrderStatus.RESERVED:
-        # Check if shipment is locked
         shipment_result = await db.execute(select(Shipment).where(Shipment.id == order.shipment_id))
         shipment = shipment_result.scalar_one_or_none()
         if shipment and shipment.status == ShipmentStatus.LOCKED:
             raise HTTPException(status_code=400, detail="Order is locked in a shipment, cannot cancel")
-        # Release reserved funds
         total_reserved = order.quantity_bags * order.price_per_bag
         await payment_engine.release_reservation(db, current_user, total_reserved, order.shipment_id)
     order.status = OrderStatus.CANCELLED
@@ -117,4 +134,5 @@ def _order_to_dict(order: Order) -> dict:
         "delivery_location": order.delivery_location,
         "crop": order.crop,
         "created_at": order.created_at.isoformat(),
+        "payment_mode": order.payment_mode,      # already a string
     }
