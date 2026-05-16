@@ -9,6 +9,7 @@ from app.models.order import Order, OrderStatus
 from app.models.verification import VerificationReport, VerificationStatus
 from app.models.harvest import Harvest, HarvestStatus
 from app.models.rating import Rating
+from app.models.feedback import Feedback, FeedbackType   # <-- added import
 from datetime import datetime, timezone
 
 async def recalc_farmer_rating(db: AsyncSession, farmer_id: uuid.UUID) -> Rating:
@@ -55,9 +56,12 @@ async def recalc_farmer_rating(db: AsyncSession, farmer_id: uuid.UUID) -> Rating
     score = (0.4 * agent_accuracy + 0.4 * delivery_ratio + 0.2 * efficiency_ratio) * 5.0
     score = max(1.0, min(5.0, score))
 
+    # Fetch existing rating to preserve feedback scores
+    existing_rating = await db.execute(select(Rating).where(Rating.user_id == farmer_id, Rating.role == "FARMER"))
+    existing_rating = existing_rating.scalar_one_or_none()
+
     # Update or create rating
-    rating = await db.execute(select(Rating).where(Rating.user_id == farmer_id, Rating.role == "FARMER"))
-    rating = rating.scalar_one_or_none()
+    rating = existing_rating
     if not rating:
         rating = Rating(user_id=farmer_id, role="FARMER")
         db.add(rating)
@@ -68,6 +72,12 @@ async def recalc_farmer_rating(db: AsyncSession, farmer_id: uuid.UUID) -> Rating
         "delivery_ratio": delivery_ratio,
         "efficiency_ratio": efficiency_ratio,
     }
+    # Preserve any existing feedback scores
+    if existing_rating and existing_rating.component_scores:
+        for key in ("buyer_feedback", "agent_feedback"):
+            if key in existing_rating.component_scores:
+                rating.component_scores[key] = existing_rating.component_scores[key]
+
     rating.total_transactions = total_harvests
     rating.last_updated = datetime.now(timezone.utc)
     await db.commit()
@@ -211,3 +221,39 @@ async def update_ratings_for_shipment(db: AsyncSession, shipment: Shipment):
     )).scalars().all()
     for v in verifs:
         await recalc_agent_rating(db, v.agent_id)
+
+
+async def update_farmer_rating_from_feedback(db: AsyncSession, farmer_id: uuid.UUID):
+    """Recalculate farmer rating after new feedback is submitted."""
+    # Fetch all feedback for this farmer
+    feedback_query = select(Feedback).where(Feedback.to_user_id == farmer_id)
+    feedbacks = (await db.execute(feedback_query)).scalars().all()
+
+    buyer_ratings = [f.rating for f in feedbacks if f.feedback_type == FeedbackType.BUYER_TO_FARMER]
+    agent_ratings = [f.rating for f in feedbacks if f.feedback_type == FeedbackType.AGENT_TO_FARMER]
+
+    # Compute average scores (or use weighted, recency, etc.)
+    avg_buyer = sum(buyer_ratings) / len(buyer_ratings) if buyer_ratings else 3.0  # neutral default
+    avg_agent = sum(agent_ratings) / len(agent_ratings) if agent_ratings else 3.0
+
+    # Recalc the automatic score first, then blend with feedback.
+    rating = await recalc_farmer_rating(db, farmer_id)  # updates automatic components
+
+    # Now blend feedback: 60% automatic, 20% buyer feedback, 20% agent feedback
+    automatic_score = rating.overall_score  # 1-5
+    blended_score = (0.6 * automatic_score) + (0.2 * avg_buyer) + (0.2 * avg_agent)
+    blended_score = max(1.0, min(5.0, blended_score))
+
+    # Update the rating record with the blended score and store feedback components
+    rating.overall_score = blended_score
+    if rating.component_scores:
+        rating.component_scores["buyer_feedback"] = avg_buyer
+        rating.component_scores["agent_feedback"] = avg_agent
+    else:
+        rating.component_scores = {
+            "buyer_feedback": avg_buyer,
+            "agent_feedback": avg_agent,
+        }
+    rating.last_updated = datetime.now(timezone.utc)
+    await db.commit()
+    return rating

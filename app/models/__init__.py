@@ -10,3 +10,4 @@ from app.models.harvest import Harvest, HarvestStatus
 from app.models.pricing import PricingConfig
 from app.models.device_token import DeviceToken
 from app.models.rating import Rating
+from app.models.feedback import Feedback, FeedbackType
