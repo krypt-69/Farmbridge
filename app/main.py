@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from app.config import get_settings
 from app.api.v1.router import api_router
 from app.integrations.firebase_auth import init_firebase
+from fastapi.staticfiles import StaticFiles
 
 settings = get_settings()
 
@@ -12,3 +13,4 @@ async def startup():
     init_firebase()
 
 app.include_router(api_router, prefix="/api/v1")
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")

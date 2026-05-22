@@ -152,6 +152,7 @@ async def list_shipment_harvests(
             for h in cluster:
                 cluster_data.append({
                     "id": str(h.id),
+                    "farmer_id": str(h.farmer_id),   # <-- added
                     "farmer_name": farmer_map.get(h.farmer_id, "Unknown"),
                     "crop": h.crop,
                     "quantity_bags": h.quantity_bags,
@@ -165,6 +166,7 @@ async def list_shipment_harvests(
         return [
             {
                 "id": str(h.id),
+                "farmer_id": str(h.farmer_id),   # <-- added
                 "farmer_name": (await db.execute(select(User).where(User.id == h.farmer_id))).scalar_one_or_none().full_name,
                 "crop": h.crop,
                 "quantity_bags": h.quantity_bags,
