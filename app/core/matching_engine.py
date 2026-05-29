@@ -11,9 +11,15 @@ from app.models.pricing import PricingConfig
 from app.models.user import User   # <-- added import
 from app.core.payment_engine import reserve_funds, release_reservation
 from app.core.shipment_engine import lock_shipment
+from app.utils.gps import haversine_distance
+from datetime import datetime, timezone, timedelta
+
 
 DEFAULT_PRICE_PER_BAG = 500000
-
+# Maximum distance (metres) between harvests to be grouped in the same shipment
+MAX_CLUSTER_DISTANCE_M = 15_000   # 15 km
+# Maximum days spread between harvest dates in the same shipment
+MAX_HARVEST_TIME_SPREAD_DAYS = 3
 async def match_pending_orders(db: AsyncSession):
     """Try to match all pending orders to open shipments, then match harvests."""
     # --- Orders matching (unchanged) ---
@@ -80,22 +86,96 @@ async def _get_total_committed_bags(db, shipment_id):
         )
     )
     return total_orders.scalar() + total_harvests.scalar()
+async def _is_harvest_near_shipment_cluster(
+    db: AsyncSession,
+    shipment: Shipment,
+    harvest: Harvest,
+    max_distance_m: int = MAX_CLUSTER_DISTANCE_M,
+) -> bool:
+    """
+    Return True if the harvest's GPS is within max_distance_m of any harvest
+    already assigned to the shipment. If no harvests are assigned yet, always return True.
+    """
+    if harvest.latitude is None or harvest.longitude is None:
+        return False   # cannot determine distance, exclude
+
+    # Get all harvests already assigned to this shipment
+    assigned = (await db.execute(
+        select(Harvest).where(
+            Harvest.shipment_id == shipment.id,
+            Harvest.status == HarvestStatus.MATCHED,
+            Harvest.latitude != None,
+            Harvest.longitude != None,
+        )
+    )).scalars().all()
+
+    if not assigned:
+        # No harvests in the cluster yet, always accept the first one
+        return True
+
+    for a in assigned:
+        d = haversine_distance(
+            harvest.latitude, harvest.longitude,
+            a.latitude, a.longitude,
+        )
+        if d <= max_distance_m:
+            return True
+    return False
+async def _is_harvest_within_time_window(
+    db: AsyncSession,
+    shipment: Shipment,
+    harvest: Harvest,
+    max_days: int = MAX_HARVEST_TIME_SPREAD_DAYS,
+) -> bool:
+    """
+    Return True if the harvest's expected date (or today if missing)
+    is within max_days of the earliest harvest already in the shipment.
+    """
+    # Determine the candidate's effective date
+    candidate_date = harvest.expected_harvest_date or datetime.now(timezone.utc)
+
+    # Get the earliest date among already matched harvests
+    assigned = (await db.execute(
+        select(Harvest).where(
+            Harvest.shipment_id == shipment.id,
+            Harvest.status == HarvestStatus.MATCHED,
+            Harvest.expected_harvest_date != None,
+        )
+    )).scalars().all()
+
+    if not assigned:
+        # No harvests with dates yet – accept the first one
+        return True
+
+    # Find the earliest date in the cluster
+    earliest = min(
+        (h.expected_harvest_date for h in assigned if h.expected_harvest_date is not None),
+        default=None,
+    )
+    if earliest is None:
+        return True   # no dates in cluster, accept
+
+    # Compare
+    diff = abs((candidate_date - earliest).days)
+    return diff <= max_days
 
 
 async def match_harvests_to_shipments(db: AsyncSession):
-    """Assign pending harvests from approved farmers to matching shipments if they fit."""
+    """Assign pending harvests to matching shipments if they fit, are near, and within time window."""
     pending_harvests = (await db.execute(
-        select(Harvest)
-        .join(User, Harvest.farmer_id == User.id)
-        .where(
-            Harvest.status == HarvestStatus.PENDING,
-            User.approval_status == "APPROVED"  # <-- only approved farmers
-        )
+        select(Harvest).where(Harvest.status == HarvestStatus.PENDING)
     )).scalars().all()
 
     for harvest in pending_harvests:
         shipment = await find_suitable_shipment_for_harvest(db, harvest)
         if shipment:
+            # Check proximity
+            if not await _is_harvest_near_shipment_cluster(db, shipment, harvest):
+                continue
+            # Check time window
+            if not await _is_harvest_within_time_window(db, shipment, harvest):
+                continue
+            # All checks passed → assign
             harvest.shipment_id = shipment.id
             harvest.status = HarvestStatus.MATCHED
             await maybe_lock_shipment(db, shipment)

@@ -12,7 +12,8 @@ from app.core import shipment_engine
 from app.models.harvest import Harvest, HarvestStatus
 from app.utils.gps import cluster_harvests, haversine_distance
 router = APIRouter(prefix="/shipments", tags=["shipments"])
-
+# Maximum distance (metres) an agent can be from any harvest in the shipment to be considered available
+MAX_AGENT_DISTANCE_M = 20_000   # 20 km
 # Helper to convert shipment to dict
 def shipment_to_dict(s: Shipment) -> dict:
     return {
@@ -186,7 +187,7 @@ async def list_available_agents(
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
 
-    # Get harvests with coordinates for this shipment
+    # Get harvests with coordinates for this shipment (only those that are matched/pending)
     harvest_query = select(Harvest).where(
         Harvest.region == shipment.region,
         Harvest.crop == shipment.crop,
@@ -196,9 +197,9 @@ async def list_available_agents(
     )
     harvests = (await db.execute(harvest_query)).scalars().all()
 
-    # Get all agents with coordinates
+    # Get all agents/admins with GPS coordinates
     agent_query = select(User).where(
-        User.role.in_([UserRole.AGENT, UserRole.ADMIN]),   # admins can act as agents
+        User.role.in_([UserRole.AGENT, UserRole.ADMIN]),
         User.is_active == True,
         User.gps_latitude != None,
         User.gps_longitude != None,
@@ -206,9 +207,15 @@ async def list_available_agents(
     agents = (await db.execute(agent_query)).scalars().all()
 
     if not harvests:
-        # No harvest coordinates, return agents unsorted
+        # No harvest coordinates, return agents unsorted but with null distance
         return [
-            {"agent_id": str(a.id), "full_name": a.full_name, "latitude": a.gps_latitude, "longitude": a.gps_longitude, "distance_km": None}
+            {
+                "agent_id": str(a.id),
+                "full_name": a.full_name,
+                "latitude": a.gps_latitude,
+                "longitude": a.gps_longitude,
+                "distance_km": None,
+            }
             for a in agents
         ]
 
@@ -217,10 +224,16 @@ async def list_available_agents(
     for agent in agents:
         min_distance = float("inf")
         for h in harvests:
-            d = haversine_distance(agent.gps_latitude, agent.gps_longitude, h.latitude, h.longitude)
-            if d < min_distance:
-                min_distance = d
-        agent_distances.append((agent, min_distance))
+            if h.latitude is not None and h.longitude is not None:
+                d = haversine_distance(
+                    agent.gps_latitude, agent.gps_longitude,
+                    h.latitude, h.longitude,
+                )
+                if d < min_distance:
+                    min_distance = d
+        # Only include if within the maximum allowed distance
+        if min_distance <= MAX_AGENT_DISTANCE_M:
+            agent_distances.append((agent, min_distance))
 
     # Sort by distance
     agent_distances.sort(key=lambda x: x[1])

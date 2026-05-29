@@ -1,0 +1,16 @@
+{
+  "suggested_shipments": [
+    {
+      "region": "Nyandarua",
+      "crop": "potatoes",
+      "harvest_ids": ["4de42e4e-35f6-422d-ad98-169914c800ac", "5df3f808-a33b-4929-9706-63093db537c2"],
+      "order_ids": [],
+      "suggested_agent_id": "fd787c00-1303-4c18-b98b-b3831b69f934",
+      "suggested_lorry_type": "small (3-ton)",
+      "explanation": "Both harvests are close and ready within 2 days."
+    }
+  ],
+  "unmatched_harvest_ids": ["52fa7da6-7910-4d0c-bea6-866e2001daf0"],
+  "unmatched_order_ids": [],
+  "general_notes": "Harvest C is too far in time. Consider later."
+}

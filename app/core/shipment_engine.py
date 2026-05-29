@@ -13,7 +13,8 @@ from app.models.user import User
 from sqlalchemy import select as sa_select
 from app.core.notification_engine import create_notifications_for_shipment
 from app.workers.tasks.notification_tasks import send_push_notification_task
-
+from app.utils.logistics import suggest_lorry_type
+from sqlalchemy.orm.attributes import flag_modified
 class InvalidStateTransition(Exception):
     pass
 
@@ -97,6 +98,44 @@ async def lock_shipment(db: AsyncSession, shipment: Shipment) -> Shipment:
                 "farmer_payout_per_bag": pricing.base_market_price_cents - pricing.platform_fee_cents - pricing.transport_fee_cents,
             }
         }
+
+    # ---------- NEW: lorry size suggestion ----------
+    from app.models.harvest import Harvest, HarvestStatus
+    from app.utils.logistics import suggest_lorry_type
+    from app.utils.gps import haversine_distance
+
+    harvests = (await db.execute(
+        select(Harvest).where(
+            Harvest.shipment_id == shipment.id,
+            Harvest.status == HarvestStatus.MATCHED,
+            Harvest.latitude != None,
+            Harvest.longitude != None,
+        )
+    )).scalars().all()
+
+    max_distance_m = 0.0
+    if harvests:
+        latlngs = [(h.latitude, h.longitude) for h in harvests]
+        for i in range(len(latlngs)):
+            for j in range(i + 1, len(latlngs)):
+                d = haversine_distance(latlngs[i][0], latlngs[i][1], latlngs[j][0], latlngs[j][1])
+                if d > max_distance_m:
+                    max_distance_m = d
+
+    total_bags = sum(h.quantity_bags for h in harvests) or shipment.actual_quantity_bags or 0
+    max_distance_km = max_distance_m / 1000
+
+    lorry_suggestion = suggest_lorry_type(total_bags, max_distance_km)
+
+    if shipment.extra_data is None:
+        shipment.extra_data = {}
+    shipment.extra_data["lorry_suggestion"] = {
+        "total_bags": total_bags,
+        "max_distance_km": round(max_distance_km, 2),
+        "suggested_lorry": lorry_suggestion,
+    }
+    # ------------------------------------------------
+    flag_modified(shipment, "extra_data")
 
     await db.commit()
     await db.refresh(shipment)
