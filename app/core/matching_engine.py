@@ -163,9 +163,10 @@ async def _is_harvest_within_time_window(
 async def match_harvests_to_shipments(db: AsyncSession):
     """Assign pending harvests to matching shipments if they fit, are near, and within time window."""
     pending_harvests = (await db.execute(
-        select(Harvest).where(Harvest.status == HarvestStatus.PENDING)
+        select(Harvest)
+        .where(Harvest.status == HarvestStatus.PENDING)
+        .order_by(Harvest.expected_harvest_date.asc().nullsfirst())
     )).scalars().all()
-
     for harvest in pending_harvests:
         shipment = await find_suitable_shipment_for_harvest(db, harvest)
         if shipment:
@@ -178,6 +179,7 @@ async def match_harvests_to_shipments(db: AsyncSession):
             # All checks passed → assign
             harvest.shipment_id = shipment.id
             harvest.status = HarvestStatus.MATCHED
+            await db.flush()
             await maybe_lock_shipment(db, shipment)
 
 
